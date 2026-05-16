@@ -220,6 +220,21 @@ void SPI2_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+/* OV5640 摄像头 DCMI / DMA 中断处理 */
+extern DCMI_HandleTypeDef hdcmi;
+extern DMA_HandleTypeDef  DMA_Handle_dcmi;
+#include "stm32h7xx_hal.h"
+
+void DCMI_IRQHandler(void)
+{
+    HAL_DCMI_IRQHandler(&hdcmi);
+}
+
+void DMA2_Stream7_IRQHandler(void)
+{
+    HAL_DMA_IRQHandler(&DMA_Handle_dcmi);
+}
+
 /* USER CODE END 1 */
 
 /**

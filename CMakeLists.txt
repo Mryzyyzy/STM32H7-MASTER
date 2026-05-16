@@ -47,12 +47,17 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # =================== BSP 驱动层 ===================
     Core/BSP/SPI/bsp_spi.c
     Core/BSP/EXTI/bsp_exti.c
+    Core/BSP/Cam/bsp_cam.c
+    Core/BSP/LCD/bsp_lcd.c
+    Core/BSP/LCD/bsp_lcd_fonts.c
 
     # =================== Middlewares 中间件层 ===================
     # 基础定义
     Core/Middlewares/Common/com_def.h
     # 上行数据模块
     Core/Middlewares/Scheduler/scheduler_data.c
+    # 摄像头模块
+    Core/Middlewares/Cam/cam_module.c
     # 下行指令模块
     Core/Middlewares/Dispatcher/dispatcher_cmd.c
     # SPI 协议层
@@ -70,10 +75,13 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     Core/BSP/EXTI
     Core/BSP/SPI
+    Core/BSP/Cam
+    Core/BSP/LCD
     Core/Middlewares/Common
     Core/Middlewares/Dispatcher
     Core/Middlewares/Scheduler
     Core/Middlewares/SpiProtocol
+    Core/Middlewares/Cam
     Core/Middlewares/Test
     Core/App/TaskCreate
     Core/App/SpiMaster
