@@ -66,7 +66,7 @@ void SPI_Main_Task(void* argument)
                         if (owner && owner->flush) owner->flush();
                     }
                 } else {
-                    if(cnt++ % 100 == 0){
+                    if(cnt++ == 100){
                         (void)BspSpi_StartPoll();
                         cnt = 0;
                     }
