@@ -68,6 +68,6 @@ void Test_Task(void* argument)
     (void)argument;
     while (1) {
         g_data_module_test.collect();
-        osDelay(100);
+        osDelay(1000);
     }
 }

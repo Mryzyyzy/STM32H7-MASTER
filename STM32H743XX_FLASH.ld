@@ -247,6 +247,25 @@ SECTIONS
     . = ALIGN(4);
   } >RAM
 
+  .cam_buf (NOLOAD) :
+  {
+    . = ALIGN(32);
+    __cam_buf_start = .;
+    *(.cam_buf)
+    *(.cam_buf*)
+    . = ALIGN(32);
+    __cam_buf_end = .;
+  } >RAM
+
+  .cam_jpg_buf (NOLOAD) :
+  {
+    . = ALIGN(32);
+    __cam_jpg_buf_start = .;
+    *(.cam_jpg_buf)
+    *(.cam_jpg_buf*)
+    . = ALIGN(32);
+  } >RAM
+
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack (NOLOAD) :
   {

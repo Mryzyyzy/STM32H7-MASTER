@@ -75,10 +75,14 @@
 #define CAM_DISP_BufferSize       CAM_DMA_BufferSize
 
 /*----------------------------------------- 摄像头缓冲区（AXI SRAM） --------------------------------------*/
+/* 地址由链接脚本 .cam_buf / .cam_jpg_buf 段自动分配，紧随 .dma_bss */
 
-#define CAM_Buffer_ADDR          0x24000000U
+extern uint32_t __cam_buf_start;
+extern uint32_t __cam_jpg_buf_start;
+
+#define CAM_Buffer_ADDR          ((uint32_t)&__cam_buf_start)
 #define CAM_Buffer               ((uint32_t)CAM_Buffer_ADDR)
-#define CAM_RGB_BUF_ADDR         0x24020000U   // JPEG 解码用（暂不使用）
+#define CAM_RGB_BUF_ADDR         ((uint32_t)&__cam_jpg_buf_start)   // JPEG 解码用（暂不使用）
 
 /*----------------------------------------- 像素格式选择 --------------------------------------------------*/
 
