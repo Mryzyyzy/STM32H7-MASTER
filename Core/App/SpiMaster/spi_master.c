@@ -11,7 +11,7 @@
  *
  * MISO 命令可在任意返回帧中 piggyback，DMA 回调自动解析分发。
  */
-#include "os_tasks_impl.h"
+#include "spi_master.h"
 #include "com_def.h"
 #include "spi_protocol.h"
 #include "scheduler_data.h"

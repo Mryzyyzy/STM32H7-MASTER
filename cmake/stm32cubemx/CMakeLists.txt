@@ -11,7 +11,7 @@ set(MX_Defines_Syms
 
 # STM32CubeMX generated include paths
 set(MX_Include_Dirs
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Inc
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32H7xx_HAL_Driver/Inc
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Middlewares/Third_Party/FreeRTOS/Source/include
@@ -24,22 +24,22 @@ set(MX_Include_Dirs
 
 # STM32CubeMX generated application sources
 set(MX_Application_Src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/main.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/gpio.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/freertos.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/dma.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/spi.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32h7xx_it.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32h7xx_hal_msp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32h7xx_hal_timebase_tim.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/gpio.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/freertos.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/dma.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/spi.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/stm32h7xx_it.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/stm32h7xx_hal_msp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/stm32h7xx_hal_timebase_tim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/sysmem.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/syscalls.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../startup_stm32h743xx.s
 )
 
 # STM32 HAL/LL Drivers
 set(STM32_Drivers_Src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/system_stm32h7xx.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/HAL/Src/system_stm32h7xx.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim_ex.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_cortex.c

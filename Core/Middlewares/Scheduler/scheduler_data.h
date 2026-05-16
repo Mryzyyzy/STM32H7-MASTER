@@ -6,8 +6,8 @@
  * 新增传感器步骤：
  *   1. 实现 DataModule 接口（见 module_test.c 示例）
  *   2. 在 scheduler_data.c 注册表中添加模块指针
- *   3. 在 Main/os_tasks_impl.c 编写采集任务函数
- *   4. 在 Main/os_tasks_create.c 创建该任务
+ *   3. 在 App/SpiMaster/spi_master.c 编写采集任务函数
+ *   4. 在 App/TaskCreate/os_tasks_create.c 创建该任务
  *
  * 严禁修改调度器与 BSP 驱动。
  */

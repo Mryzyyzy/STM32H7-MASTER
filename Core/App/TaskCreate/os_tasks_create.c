@@ -7,7 +7,7 @@
  * 新增传感器时只需在此函数末尾追加 osThreadNew() 调用。
  */
 #include "os_tasks_create.h"
-#include "os_tasks_impl.h"
+#include "spi_master.h"
 #include "module_test.h"
 #include "com_def.h"
 #include "cmsis_os2.h"
