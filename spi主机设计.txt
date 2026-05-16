@@ -1,0 +1,856 @@
+你是一位精通嵌入式系统架构的资深工程师，擅长 STM32 开发与 AUTOSAR 分层设计思想。请基于以下详细需求，为我编写一套结构清晰、高内聚低耦合的 STM32 SPI 主机通信代码（与 ESP32 SPI 从机配合）。
+
+【0. 与 ESP32 端的协议与握手机制（必须适配）】
+0.1 SPI 物理与时序约束
+STM32 为 SPI Master，ESP32 为 SPI Slave。
+SPI 必须使用 全双工 TransmitReceive + DMA。
+ESP32 Slave 端 transaction 长度固定为 FRAME_SIZE = 1024 字节，因此 STM32 端 每次 SPI 交换长度必须固定为 1024 字节，不得变长。
+发送不足 1024 的数据需要在主机侧 padding（填 0）。
+接收侧始终按 1024 解析响应头。
+0.2 ESP32 → STM32（MISO）响应格式（每次 1024B 交换都返回）
+ESP32 在每次 SPI 交换的 MISO 中返回：
+
+rx[0]：状态字节 status
+0x00 = IDLE：允许 STM32 发送下一帧“真实数据帧”
+0x01 = BUSY：STM32 必须停止发送真实数据帧，只能等待 IRQ 并发送“空帧 poll”读取状态/命令
+rx[1]：命令长度 L（0~255）
+rx[2..2+L-1]：命令 payload（长度 L）
+其余字节忽略
+重要：命令可能 piggyback 在 正常数据帧返回 或 poll 空帧返回 中；主机必须“每次 DMA 完成回调都解析命令”。
+
+0.3 IRQ（REQ_PIN）握手信号：电平触发（Level）
+ESP32 通过 REQ_PIN（STM32 外部中断输入）输出 电平信号：
+REQ_PIN = 1：表示“ESP32 需要 STM32 发起一次 SPI 交换”（原因可能是：从 BUSY→IDLE 通知；或有新命令待下发）
+REQ_PIN = 0：表示无需服务
+STM32 端要求：
+EXTI 中断中 禁止操作 SPI，只允许置位软件标志位。
+由于电平信号可能保持为高，主任务除读取标志外，还必须 周期性读取引脚电平，避免漏服务/漏命令。
+0.4 BUSY 时的强约束（与 ESP32 “控制专用 transaction”匹配）
+ESP32 端存在一个“控制专用 transaction（CTRL）”，用于在忙时让主机仍可读取状态/命令；但其 RX 会被丢弃。
+因此 STM32 必须遵守：
+
+当最近一次返回 status==BUSY 时：
+禁止发送真实数据帧（否则数据会进入 ESP32 的 CTRL discard RX，等价于丢包）
+只能发送 空帧 poll（dummy frame，1024B） 来读取状态/命令
+当 poll 返回 status==IDLE 后，才允许恢复发送真实数据帧
+【1. 核心设计原则】
+1.1 架构风格（类 AUTOSAR 分层）
+分为四层：
+
+基础定义层（公共类型/宏/协议常量，全局唯一）
+业务模块层（上行/下行对称设计，注册表模式）
+驱动层（SPI DMA 状态机、CS 控制、回调）
+应用调度层（FreeRTOS/CMSIS-RTOS2 任务 + EXTI 标志）
+1.2 拓展性（注册表模式）
+新增传感器（上行模块）或新增指令（下行模块）时：
+只允许实现模块接口并添加到全局数组
+严禁修改核心调度器与 SPI 驱动逻辑
+1.3 通信机制
+SPI 必须采用 同步请求，异步交换：
+任务中发起 DMA 交换（同步触发）
+DMA 完成回调中结束交换、上报解析结果（异步完成）
+STM32 掌握绝对主动权：ESP32 只能通过 IRQ 请求服务，禁止总线竞争
+1.4 代码风格
+C 语言实现
+变量命名规范，关键逻辑必须注释
+杜绝冗余代码：接口清晰、依赖单向、模块内聚
+【2. 基础公共定义（全局唯一）】
+2.1 数据结构（DMA 4 字节对齐）
+UpFrame（上行数据帧）：
+
+frame_type (u8)
+data_len (u16)
+data_buf[2560] (u8)
+需 __attribute__((aligned(4)))
+DownCmd（下行指令）：
+
+cmd_code (u8)
+cmd_param[16] (u8)
+param_len (u16)
+同样 4 字节对齐
+2.2 SPI 交换长度与 dummy
+定义 SPI_WIRE_SIZE = 1024，STM32 所有 SPI 交换固定该长度
+定义静态 dummy_buf[1024]，用于 poll/吸状态命令时提供 MOSI 时钟
+dummy_buf 的上行帧头可设置 frame_type = DUMMY，便于云端过滤（可选）
+2.3 状态机与全局变量
+枚举 SpiWorkState：
+SPI_IDLE
+SPI_TX_NORMAL（正常上行）
+SPI_TX_SYNC_CMD（poll 空帧吸状态/命令）
+定义全局状态变量（必须 volatile）：
+volatile SpiWorkState g_spi_state;
+volatile bool g_spi_busy;
+volatile uint8_t g_esp32_last_status;（保存最近一次 ESP32 返回 status）
+定义任务优先级宏
+【3. 业务模块层：上行数据模块（DataModule）】
+3.1 统一接口
+定义 DataModule_t，包含函数指针：
+
+module_init
+module_collect
+module_is_ready
+module_get_frame
+module_get_prio
+module_flush：发送完成或被打断时清理/释放信号量（防止 buffer 占用泄漏）
+3.2 模块实现示例
+例如：
+
+图像模块（Image）
+温度模块（Temperature）
+要求：
+
+每个模块内部维护：
+Ready 标志位
+UpFrame 缓存
+buffer 释放信号量/互斥机制（采集与 SPI 发送解耦，严禁破坏 SPI DMA buffer）
+3.3 注册表与调度器
+建立全局指针数组 g_data_module_list[]
+实现 DataScheduler_GetHighestPrioFrame()：
+遍历注册表
+返回优先级最高且 ready 的 UpFrame*
+同时返回所属模块指针（便于发送完成后调用 module_flush）
+【4. 新增核心：传感器独立任务（每模块一个任务）】
+为每个数据模块编写对应 FreeRTOS/CMSIS 任务函数：
+
+图像任务 Img_Task：
+while(1)：
+调用 g_data_module_img.module_collect()
+osDelay(100)（10Hz）
+温度任务 Temp_Task：
+while(1)：
+调用 g_data_module_temp.module_collect()
+osDelay(1000)（1Hz）
+要求：
+
+采集时必须通过信号量保护模块 buffer
+未释放时不得覆盖 buffer（宁可丢采样）
+【5. 业务模块层：下行指令模块（CmdModule）】
+5.1 统一接口
+定义 CmdModule_t：
+
+cmd_init
+cmd_match(cmd_code)
+cmd_execute(DownCmd*)
+5.2 注册表与分发
+建立全局指针数组 g_cmd_module_list[]
+实现 CmdDispatcher_Process(DownCmd* cmd)：遍历注册表，匹配并执行
+5.3 命令解析来源
+命令从 SPI MISO 返回中解析获得（见 0.2）
+不论当前是 NORMAL 还是 POLL，DMA 完成回调都必须解析并分发命令
+【6. SPI 驱动层（核心：全双工 DMA 状态机）】
+6.1 全双工传输 API
+实现：
+
+SPI_Drv_StartFullDuplex(uint8_t* tx_ptr, uint16_t len)
+内部调用 HAL_SPI_TransmitReceive_DMA
+len 必须等于 SPI_WIRE_SIZE(1024)，否则拒绝或自动 padding（推荐拒绝以保证一致性）
+拉低 CS，设置 g_spi_busy = true 与 g_spi_state
+提供便捷函数：
+
+SPI_Drv_StartPoll()：使用 dummy_buf 发起 SPI_TX_SYNC_CMD 状态的 1024B 交换
+6.2 DMA 完成回调
+实现 HAL_SPI_TxRxCpltCallback：
+
+拉高 CS
+统一解析 MISO：
+更新 g_esp32_last_status
+如 L>0 则解析命令并调用 CmdDispatcher_Process
+复位 g_spi_busy=false，g_spi_state=SPI_IDLE
+要求：
+
+回调中只做轻量解析与投递（必要时投递到队列/事件），避免长耗时
+【7. 应用调度层（FreeRTOS 与 EXTI）】
+7.1 外部中断（ESP32 REQ_PIN，电平）
+实现 HAL_GPIO_EXTI_Callback：
+
+当检测到 REQ_PIN 上升沿/触发时：
+仅置位全局标志 esp32_req_flag = true
+严禁在中断中操作 SPI、严禁阻塞
+7.2 SPI 主任务（SPI_Main_Task，10ms 周期）
+while(1)（10ms）调度策略（STM32 绝对主控）：
+
+前置规则：
+
+任务内每次循环必须读取 REQ_PIN 当前电平（因为是电平握手），结合 esp32_req_flag 判定是否需要服务。
+当 !g_spi_busy 时：
+
+优先级 0（BUSY 强约束）：
+
+若 g_esp32_last_status == BUSY：
+若 REQ_PIN==1 或 esp32_req_flag==true：
+清标志
+调用 SPI_Drv_StartPoll()（dummy 1024B），吸状态/命令
+否则等待（ESP32 free 或有命令时会把 REQ 拉高）
+优先级 1（命令/通知服务）：
+
+若 g_esp32_last_status == IDLE 且 REQ_PIN==1（或 esp32_req_flag 为真）且当前无更高优先级数据要发：
+清标志
+调用 SPI_Drv_StartPoll() 获取命令（可选策略：也可在正常数据帧里 piggyback，但为了及时性需支持 poll）
+优先级 2（正常上行数据发送）：
+
+若 g_esp32_last_status == IDLE：
+DataScheduler_GetHighestPrioFrame() 取就绪帧
+若有帧：
+打包为 1024B wire buffer（含帧头与 payload，剩余填 0）
+调用 SPI_Drv_StartFullDuplex(wire_tx, 1024) 发数据
+发送完成后必须调用该模块 module_flush 释放 buffer 信号量
+循环末尾：
+
+osDelay(10)
+【8. 输出要求】
+请输出：
+
+清晰的文件划分与代码实现（.h/.c）
+关键结构体/接口/注册表/调度器实现
+SPI 驱动状态机 + DMA 回调 + CS 控制
+SPI_Main_Task + EXTI 标志逻辑（适配 IRQ 电平 + BUSY poll 约束）
+示例：Image/Temperature 模块与对应任务、示例命令模块
+并确保：新增模块只需实现接口并加入数组，不需要修改 SPI 驱动与调度核心。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+面给出一套**适配你当前 ESP32（IRQ 电平 + 常驻 CTRL transaction）**的 STM32 SPI 主机代码架构（C 语言），按你要求的“类 AUTOSAR 分层思想”组织，并满足：
+
+SPI 全双工 HAL_SPI_TransmitReceive_DMA
+同步请求、异步交换（任务里发起、DMA 回调结束）
+注册表模式（新增模块只加到数组，不改调度/驱动）
+适配 ESP32 协议：ESP32 每帧 MISO 为 [status][L][cmd_bytes...]，IRQ 为电平：
+IRQ=1 表示：从 busy->free 的通知或有新命令待取
+ESP32 在 BUSY 时仍有 CTRL transaction 可用，STM32 可发“空帧”读状态/命令
+强约束：BUSY 时 STM32 只能发空帧（poll），不能发真实数据帧（否则会被 ESP32 ctrl discard 掉）
+重要现实约束（必须写进 STM32 设计）：
+你 ESP32 slave 端 transaction 长度是固定 FRAME_SIZE=1024，因此 STM32 端也必须固定每次 SPI 传输 1024 字节。下面代码将 SPI_WIRE_SIZE 固定为 1024；上行 UpFrame(2560) 由模块自行拆分成多帧（示例里给出“单帧模式”，超长直接不发送/返回 busy，你可以在 Image 模块里扩展分片而无需改核心）。
+
+目录结构（建议）
+com_def.h：基础定义层（全局唯一）
+data_module.h/.c：上行数据模块接口 + 注册表 + 调度器
+data_module_img.c / data_module_temp.c：示例模块实现 + 各自任务
+cmd_module.h/.c：下行指令模块接口 + 注册表 + 分发器
+spi_drv.h/.c：SPI 驱动层（DMA 状态机、CS、回调、全双工）
+app_spi.c：应用调度层（IRQ EXTI 标志、SPI_Main_Task）
+下面按文件给出代码骨架（可直接落地到 STM32CubeIDE 工程中）。
+
+1) com_def.h（基础定义层，全局唯一）
+C
+
+#pragma once
+#include <stdint.h>
+#include <stdbool.h>
+
+/* ====================== Wire Protocol (ESP32 -> STM32) ======================
+ * MISO[0] = status: 0x00 IDLE, 0x01 BUSY
+ * MISO[1] = cmd_len L (0..255)
+ * MISO[2..2+L-1] = cmd payload bytes
+ */
+
+#define SPI_WIRE_SIZE          (1024U)   // 必须与 ESP32 FRAME_SIZE 一致
+#define SPI_MISO_HDR_SIZE      (2U)
+#define SPI_MISO_CMD_MAX       (255U)
+
+// STM32->ESP32 MOSI：建议也放一个“上行帧头”，便于云端过滤 dummy/poll
+#define UP_WIRE_HDR_SIZE       (3U)      // [type(1) + data_len(2)]
+#define UP_WIRE_PAYLOAD_MAX    (SPI_WIRE_SIZE - UP_WIRE_HDR_SIZE)
+
+#define UP_FRAME_TYPE_DUMMY    (0xFEU)   // dummy/poll 帧，ESP32侧可上传，云端按type过滤
+#define UP_FRAME_TYPE_IMG      (0x01U)
+#define UP_FRAME_TYPE_TEMP     (0x02U)
+
+/* DMA 对齐要求 */
+#define DMA_ALIGNED4           __attribute__((aligned(4)))
+
+typedef struct DMA_ALIGNED4 {
+    uint8_t  frame_type;
+    uint16_t data_len;
+    uint8_t  data_buf[2560];
+} UpFrame;
+
+typedef struct DMA_ALIGNED4 {
+    uint8_t  cmd_code;
+    uint8_t  cmd_param[16];
+    uint16_t param_len;
+} DownCmd;
+
+/* SPI 状态机 */
+typedef enum {
+    SPI_IDLE = 0,
+    SPI_TX_NORMAL,
+    SPI_TX_SYNC_CMD,   // 这里用作“poll吸状态/命令”（dummy帧）
+} SpiWorkState;
+
+/* 全局状态变量（驱动层维护） */
+extern volatile SpiWorkState g_spi_state;
+extern volatile bool         g_spi_busy;
+
+/* ESP32 最近一次返回的状态（应用层决策用） */
+extern volatile uint8_t      g_esp32_last_status;
+
+/* 优先级宏（示例，可按项目规范调整） */
+#define PRIO_SPI_MAIN_TASK     (osPriorityAboveNormal)
+#define PRIO_IMG_TASK          (osPriorityNormal)
+#define PRIO_TEMP_TASK         (osPriorityLow)
+2) data_module.h/.c（业务模块层：上行 DataModule + 注册表调度）
+data_module.h
+C
+
+#pragma once
+#include "com_def.h"
+
+typedef struct DataModule {
+    void     (*module_init)(void);
+    void     (*module_collect)(void);
+
+    bool     (*module_is_ready)(void);
+    UpFrame* (*module_get_frame)(void);
+    uint8_t  (*module_get_prio)(void);
+
+    void     (*module_flush)(void); // 发送完成/被打断时清理并释放资源
+} DataModule_t;
+
+/* 注册表（新增模块只需加入数组，不动调度核心） */
+extern DataModule_t* const g_data_module_list[];
+extern const uint32_t      g_data_module_num;
+
+/* 调度器：返回就绪且优先级最高的帧（以及其模块指针，方便回收flush） */
+UpFrame* DataScheduler_GetHighestPrioFrame(DataModule_t** out_owner);
+data_module.c
+C
+
+#include "data_module.h"
+
+UpFrame* DataScheduler_GetHighestPrioFrame(DataModule_t** out_owner)
+{
+    DataModule_t* best_m = NULL;
+    UpFrame* best_f = NULL;
+    uint8_t best_p = 0;
+
+    for (uint32_t i = 0; i < g_data_module_num; i++) {
+        DataModule_t* m = g_data_module_list[i];
+        if (m && m->module_is_ready && m->module_is_ready()) {
+            uint8_t p = m->module_get_prio ? m->module_get_prio() : 0;
+            if (!best_m || (p > best_p)) {
+                best_m = m;
+                best_f = m->module_get_frame ? m->module_get_frame() : NULL;
+                best_p = p;
+            }
+        }
+    }
+
+    if (out_owner) *out_owner = best_m;
+    return best_f;
+}
+3) 示例上行模块（Image / Temperature）+ 各自采集任务
+关键点：模块内部用信号量保护 buffer 生命周期，采集不会破坏 SPI DMA buffer。
+这里用 CMSIS-RTOS2（osSemaphore），你也可以换成 FreeRTOS semaphore。
+
+data_module_img.c（示例）
+C
+
+#include "data_module.h"
+#include "cmsis_os2.h"
+#include <string.h>
+
+/* ---- Image Module 内部资源 ---- */
+static UpFrame DMA_ALIGNED4 s_img_frame;
+static volatile bool s_img_ready = false;
+static osSemaphoreId_t s_img_buf_sem;
+
+static void Img_Init(void)
+{
+    s_img_buf_sem = osSemaphoreNew(1, 1, NULL); // 初始可用
+    s_img_ready = false;
+    memset(&s_img_frame, 0, sizeof(s_img_frame));
+    s_img_frame.frame_type = UP_FRAME_TYPE_IMG;
+}
+
+static void Img_Collect(void)
+{
+    if (osSemaphoreAcquire(s_img_buf_sem, 0) != osOK) {
+        // 上一个帧尚未被 SPI 发送/flush，跳过本次采集
+        return;
+    }
+
+    // 采集图像（示例：填一些数据）
+    // 注意：若 data_len > UP_WIRE_PAYLOAD_MAX，建议模块自行做分片状态机
+    s_img_frame.data_len = 600; // 示例：单帧小于 1021
+    for (uint16_t i = 0; i < s_img_frame.data_len; i++) {
+        s_img_frame.data_buf[i] = (uint8_t)i;
+    }
+
+    s_img_ready = true;
+}
+
+static bool Img_IsReady(void) { return s_img_ready; }
+static UpFrame* Img_GetFrame(void) { return (UpFrame*)&s_img_frame; }
+static uint8_t Img_GetPrio(void) { return 10; }
+
+static void Img_Flush(void)
+{
+    // 发送完成/被打断：释放buffer
+    s_img_ready = false;
+    osSemaphoreRelease(s_img_buf_sem);
+}
+
+/* ---- 对外导出模块对象 ---- */
+DataModule_t g_data_module_img = {
+    .module_init     = Img_Init,
+    .module_collect  = Img_Collect,
+    .module_is_ready = Img_IsReady,
+    .module_get_frame= Img_GetFrame,
+    .module_get_prio = Img_GetPrio,
+    .module_flush    = Img_Flush,
+};
+
+/* ---- 对应任务：10Hz 采集 ---- */
+void Img_Task(void *argument)
+{
+    (void)argument;
+    while (1) {
+        g_data_module_img.module_collect();
+        osDelay(100);
+    }
+}
+data_module_temp.c（示例）
+C
+
+#include "data_module.h"
+#include "cmsis_os2.h"
+#include <string.h>
+
+static UpFrame DMA_ALIGNED4 s_temp_frame;
+static volatile bool s_temp_ready = false;
+static osSemaphoreId_t s_temp_buf_sem;
+
+static void Temp_Init(void)
+{
+    s_temp_buf_sem = osSemaphoreNew(1, 1, NULL);
+    s_temp_ready = false;
+    memset(&s_temp_frame, 0, sizeof(s_temp_frame));
+    s_temp_frame.frame_type = UP_FRAME_TYPE_TEMP;
+}
+
+static void Temp_Collect(void)
+{
+    if (osSemaphoreAcquire(s_temp_buf_sem, 0) != osOK) {
+        return;
+    }
+
+    // 示例：温度2字节
+    s_temp_frame.data_len = 2;
+    int16_t temp = 253; // 25.3C *10
+    memcpy(s_temp_frame.data_buf, &temp, sizeof(temp));
+
+    s_temp_ready = true;
+}
+
+static bool Temp_IsReady(void) { return s_temp_ready; }
+static UpFrame* Temp_GetFrame(void) { return (UpFrame*)&s_temp_frame; }
+static uint8_t Temp_GetPrio(void) { return 3; }
+
+static void Temp_Flush(void)
+{
+    s_temp_ready = false;
+    osSemaphoreRelease(s_temp_buf_sem);
+}
+
+DataModule_t g_data_module_temp = {
+    .module_init     = Temp_Init,
+    .module_collect  = Temp_Collect,
+    .module_is_ready = Temp_IsReady,
+    .module_get_frame= Temp_GetFrame,
+    .module_get_prio = Temp_GetPrio,
+    .module_flush    = Temp_Flush,
+};
+
+void Temp_Task(void *argument)
+{
+    (void)argument;
+    while (1) {
+        g_data_module_temp.module_collect();
+        osDelay(1000);
+    }
+}
+data_module_registry.c（注册表）
+C
+
+#include "data_module.h"
+
+extern DataModule_t g_data_module_img;
+extern DataModule_t g_data_module_temp;
+
+DataModule_t* const g_data_module_list[] = {
+    &g_data_module_img,
+    &g_data_module_temp,
+};
+
+const uint32_t g_data_module_num = sizeof(g_data_module_list)/sizeof(g_data_module_list[0]);
+4) cmd_module.h/.c（下行业务模块层：CmdModule + 注册表分发）
+cmd_module.h
+C
+
+#pragma once
+#include "com_def.h"
+
+typedef struct CmdModule {
+    void (*cmd_init)(void);
+    bool (*cmd_match)(uint8_t cmd_code);
+    void (*cmd_execute)(const DownCmd* cmd);
+} CmdModule_t;
+
+extern CmdModule_t* const g_cmd_module_list[];
+extern const uint32_t     g_cmd_module_num;
+
+void CmdDispatcher_Process(const DownCmd* cmd);
+cmd_module.c
+C
+
+#include "cmd_module.h"
+
+void CmdDispatcher_Process(const DownCmd* cmd)
+{
+    if (!cmd) return;
+
+    for (uint32_t i = 0; i < g_cmd_module_num; i++) {
+        CmdModule_t* m = g_cmd_module_list[i];
+        if (m && m->cmd_match && m->cmd_match(cmd->cmd_code)) {
+            if (m->cmd_execute) m->cmd_execute(cmd);
+            return;
+        }
+    }
+}
+示例指令模块（例如 LED 控制）
+C
+
+#include "cmd_module.h"
+#include "stm32xxxx_hal.h" // 按芯片替换
+
+#define CMD_LED_SET   (0x10U)
+
+static void LedCmd_Init(void) {}
+
+static bool LedCmd_Match(uint8_t cmd_code)
+{
+    return (cmd_code == CMD_LED_SET);
+}
+
+static void LedCmd_Execute(const DownCmd* cmd)
+{
+    if (!cmd) return;
+    // param[0] = 0/1
+    if (cmd->param_len >= 1) {
+        if (cmd->cmd_param[0]) {
+            // HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+        } else {
+            // HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+        }
+    }
+}
+
+CmdModule_t g_cmd_module_led = {
+    .cmd_init    = LedCmd_Init,
+    .cmd_match   = LedCmd_Match,
+    .cmd_execute = LedCmd_Execute,
+};
+cmd_module_registry.c
+C
+
+#include "cmd_module.h"
+
+extern CmdModule_t g_cmd_module_led;
+
+CmdModule_t* const g_cmd_module_list[] = {
+    &g_cmd_module_led,
+};
+
+const uint32_t g_cmd_module_num = sizeof(g_cmd_module_list)/sizeof(g_cmd_module_list[0]);
+5) spi_drv.h/.c（驱动层：全双工 DMA 状态机 + CS + 回调）
+spi_drv.h
+C
+
+#pragma once
+#include "com_def.h"
+#include "stm32xxxx_hal.h"  // 替换为你的 HAL 头
+
+typedef void (*SpiDrv_RxIndicationCb)(const uint8_t* rx, uint16_t len, SpiWorkState state);
+
+void SPI_Drv_Init(SPI_HandleTypeDef* hspi);
+void SPI_Drv_RegisterRxCb(SpiDrv_RxIndicationCb cb);
+
+HAL_StatusTypeDef SPI_Drv_StartFullDuplex(uint8_t* tx_ptr, uint16_t len);
+
+/* 便捷封装：发 dummy poll（len 固定 SPI_WIRE_SIZE） */
+HAL_StatusTypeDef SPI_Drv_StartPoll(void);
+spi_drv.c
+C
+
+#include "spi_drv.h"
+#include <string.h>
+
+/* ====== 需要你按板级实际配置 ====== */
+extern SPI_HandleTypeDef hspi1;
+#define SPI_HANDLE              (&hspi1)
+
+#define SPI_CS_GPIO_Port        GPIOA     // 按需修改
+#define SPI_CS_Pin              GPIO_PIN_4 // 按需修改
+
+#define SPI_CS_LOW()            HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_RESET)
+#define SPI_CS_HIGH()           HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_SET)
+/* ================================= */
+
+volatile SpiWorkState g_spi_state = SPI_IDLE;
+volatile bool         g_spi_busy  = false;
+volatile uint8_t      g_esp32_last_status = STATUS_IDLE;
+
+static SPI_HandleTypeDef* s_hspi = NULL;
+static SpiDrv_RxIndicationCb s_rx_cb = NULL;
+
+static uint8_t DMA_ALIGNED4 s_spi_tx_buf[SPI_WIRE_SIZE];
+static uint8_t DMA_ALIGNED4 s_spi_rx_buf[SPI_WIRE_SIZE];
+
+static uint8_t DMA_ALIGNED4 s_dummy_buf[SPI_WIRE_SIZE];
+
+void SPI_Drv_Init(SPI_HandleTypeDef* hspi)
+{
+    s_hspi = hspi;
+    memset(s_dummy_buf, 0, sizeof(s_dummy_buf));
+
+    // dummy帧也带一个上行头，方便云端过滤（可选）
+    s_dummy_buf[0] = UP_FRAME_TYPE_DUMMY;
+    s_dummy_buf[1] = 0;
+    s_dummy_buf[2] = 0;
+
+    SPI_CS_HIGH();
+}
+
+void SPI_Drv_RegisterRxCb(SpiDrv_RxIndicationCb cb)
+{
+    s_rx_cb = cb;
+}
+
+HAL_StatusTypeDef SPI_Drv_StartFullDuplex(uint8_t* tx_ptr, uint16_t len)
+{
+    if (!s_hspi) return HAL_ERROR;
+    if (g_spi_busy) return HAL_BUSY;
+
+    // 适配 ESP32：必须固定传输 1024 bytes
+    if (len != SPI_WIRE_SIZE) {
+        return HAL_ERROR;
+    }
+
+    memcpy(s_spi_tx_buf, tx_ptr, SPI_WIRE_SIZE);
+
+    g_spi_busy = true;
+    SPI_CS_LOW();
+    return HAL_SPI_TransmitReceive_DMA(s_hspi, s_spi_tx_buf, s_spi_rx_buf, SPI_WIRE_SIZE);
+}
+
+HAL_StatusTypeDef SPI_Drv_StartPoll(void)
+{
+    g_spi_state = SPI_TX_SYNC_CMD;
+    return SPI_Drv_StartFullDuplex(s_dummy_buf, SPI_WIRE_SIZE);
+}
+
+/* DMA 完成回调 */
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi != s_hspi) return;
+
+    SPI_CS_HIGH();
+
+    // 上报给上层解析（包括 normal 里 piggyback 的命令）
+    if (s_rx_cb) {
+        s_rx_cb(s_spi_rx_buf, SPI_WIRE_SIZE, g_spi_state);
+    }
+
+    g_spi_busy  = false;
+    g_spi_state = SPI_IDLE;
+}
+
+/* 错误回调：务必拉高CS并释放busy，避免死锁 */
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi != s_hspi) return;
+    SPI_CS_HIGH();
+    g_spi_busy  = false;
+    g_spi_state = SPI_IDLE;
+}
+6) app_spi.c（应用调度层：IRQ EXTI 标志 + SPI 主任务 10ms）
+关键适配点：
+
+IRQ 为电平：EXTI 只做“置位”，主循环每次也会读引脚电平，避免错过。
+BUSY 时只能 Poll(dummy)：只有在 g_esp32_last_status==BUSY 或 “IRQ 高且无数据可发”时才发 poll。
+收到任何 SPI 返回都解析：更新 g_esp32_last_status，如有命令则 CmdDispatcher_Process()。
+C
+
+#include "com_def.h"
+#include "spi_drv.h"
+#include "data_module.h"
+#include "cmd_module.h"
+#include "cmsis_os2.h"
+#include <string.h>
+
+/* ====== 需要你按板级实际配置：ESP32 IRQ -> STM32 REQ_PIN ====== */
+#define REQ_GPIO_Port      GPIOB
+#define REQ_Pin            GPIO_PIN_0
+/* ============================================================== */
+
+static volatile bool esp32_req_flag = false; // EXTI置位，任务中清
+
+static DataModule_t* s_active_owner = NULL;
+
+/* 将 UpFrame 打包成 1024B wire buffer（MOSI） */
+static void Pack_UpFrame_ToWire(const UpFrame* f, uint8_t wire[SPI_WIRE_SIZE])
+{
+    memset(wire, 0, SPI_WIRE_SIZE);
+    wire[0] = f->frame_type;
+    wire[1] = (uint8_t)(f->data_len & 0xFF);
+    wire[2] = (uint8_t)((f->data_len >> 8) & 0xFF);
+
+    uint16_t copy_len = f->data_len;
+    if (copy_len > UP_WIRE_PAYLOAD_MAX) {
+        copy_len = UP_WIRE_PAYLOAD_MAX; // 超长：建议模块分片；这里截断保护
+    }
+    memcpy(&wire[UP_WIRE_HDR_SIZE], f->data_buf, copy_len);
+}
+
+/* ESP32 MISO 解析：status + cmd */
+static void Esp32Resp_ParseAndDispatch(const uint8_t* rx, uint16_t len)
+{
+    if (!rx || len < SPI_MISO_HDR_SIZE) return;
+
+    uint8_t status = rx[0];
+    uint8_t L      = rx[1];
+
+    g_esp32_last_status = status;
+
+    if (L == 0) return;
+    if (L > SPI_MISO_CMD_MAX) return;
+    if ((uint16_t)(2U + L) > len) return;
+
+    // 约定：cmd payload 采用序列化 DownCmd：
+    // payload[0]=cmd_code, payload[1..2]=param_len(LE), payload[3..]=param bytes
+    const uint8_t* p = &rx[2];
+
+    if (L < 3) return;
+    DownCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+
+    cmd.cmd_code  = p[0];
+    cmd.param_len = (uint16_t)p[1] | ((uint16_t)p[2] << 8);
+
+    uint16_t avail = (uint16_t)(L - 3);
+    if (cmd.param_len > avail) cmd.param_len = avail;
+    if (cmd.param_len > sizeof(cmd.cmd_param)) cmd.param_len = sizeof(cmd.cmd_param);
+
+    memcpy(cmd.cmd_param, &p[3], cmd.param_len);
+
+    CmdDispatcher_Process(&cmd);
+}
+
+/* SPI 驱动 RX indication 回调（在 DMA 回调上下文中被调用） */
+static void Spi_RxIndication(const uint8_t* rx, uint16_t len, SpiWorkState state)
+{
+    (void)state;
+    Esp32Resp_ParseAndDispatch(rx, len);
+
+    // 若刚完成的是正常上行帧，则释放对应模块的buffer
+    if (s_active_owner && s_active_owner->module_flush) {
+        s_active_owner->module_flush();
+        s_active_owner = NULL;
+    }
+}
+
+/* EXTI 中断：只置位（电平IRQ） */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == REQ_Pin) {
+        // IRQ为电平：上升沿来一次就够了，主循环还会读电平
+        esp32_req_flag = true;
+    }
+}
+
+/* SPI 主任务：10ms轮询 */
+void SPI_Main_Task(void *argument)
+{
+    (void)argument;
+
+    // 初始化模块
+    for (uint32_t i = 0; i < g_data_module_num; i++) {
+        if (g_data_module_list[i] && g_data_module_list[i]->module_init) {
+            g_data_module_list[i]->module_init();
+        }
+    }
+    for (uint32_t i = 0; i < g_cmd_module_num; i++) {
+        if (g_cmd_module_list[i] && g_cmd_module_list[i]->cmd_init) {
+            g_cmd_module_list[i]->cmd_init();
+        }
+    }
+
+    SPI_Drv_Init(SPI_HANDLE);
+    SPI_Drv_RegisterRxCb(Spi_RxIndication);
+
+    static uint8_t DMA_ALIGNED4 wire_tx[SPI_WIRE_SIZE];
+
+    while (1) {
+        // IRQ电平读取：防止漏中断/保持高电平
+        bool irq_level = (HAL_GPIO_ReadPin(REQ_GPIO_Port, REQ_Pin) == GPIO_PIN_SET);
+        bool irq_req   = irq_level || esp32_req_flag;
+
+        if (!g_spi_busy) {
+            // 规则1：若 ESP32 返回 BUSY，则 STM32 只能 poll(dummy)，直到读到 IDLE
+            if (g_esp32_last_status == STATUS_BUSY) {
+                if (irq_req) {
+                    esp32_req_flag = false;
+                    (void)SPI_Drv_StartPoll();
+                }
+                // busy 且 IRQ未拉高：等待（ESP32 free 时会拉高 IRQ）
+            } else {
+                // 当前可发送数据（IDLE）
+                DataModule_t* owner = NULL;
+                UpFrame* f = DataScheduler_GetHighestPrioFrame(&owner);
+
+                if (f) {
+                    // 正常上行（本次 MISO 也可能带 cmd）
+                    g_spi_state = SPI_TX_NORMAL;
+
+                    Pack_UpFrame_ToWire(f, wire_tx);
+                    s_active_owner = owner;
+
+                    if (SPI_Drv_StartFullDuplex(wire_tx, SPI_WIRE_SIZE) != HAL_OK) {
+                        // 启动失败：回收模块，避免信号量泄漏
+                        if (s_active_owner && s_active_owner->module_flush) {
+                            s_active_owner->module_flush();
+                        }
+                        s_active_owner = NULL;
+                    }
+
+                    // 注意：不要在这里清 irq_flag，因为“这次normal帧”会在回调里解析命令并促使 ESP32 拉低IRQ
+                    esp32_req_flag = false;
+                } else {
+                    // 无数据要发：
+                    // 若 IRQ=高，说明 ESP32 想下发命令或发 free_notify -> 发 poll(dummy) 吸一次
+                    if (irq_req) {
+                        esp32_req_flag = false;
+                        (void)SPI_Drv_StartPoll();
+                    }
+                }
+            }
+        }
+
+        osDelay(10);
+    }
+}
+
+

@@ -44,12 +44,33 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    # =================== BSP 驱动层 ===================
+    Core/BSP/bsp_spi.c
+    Core/BSP/bsp_exti.c
+
+    # =================== Middlewares 中间件层 ===================
+    # 基础定义
+    Core/Middlewares/com_def.h
+    # 上行数据模块
+    Core/Middlewares/scheduler_data.c
+    # 下行指令模块
+    Core/Middlewares/dispatcher_cmd.c
+    # SPI 协议层
+    Core/Middlewares/spi_protocol.c
+    # 测试模块
+    Core/Middlewares/module_test.c
+
+    # =================== Main 应用调度层 ===================
+    Core/Main/os_tasks_create.c
+    Core/Main/os_tasks_impl.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Core/BSP
+    Core/Middlewares
+    Core/Main
 )
 
 # Add project symbols (macros)
