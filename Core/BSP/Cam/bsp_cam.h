@@ -224,7 +224,8 @@ void     OV5640_AF_Release(void);                             // 释放马达，
 /*------------------------------------------ JPEG 硬件编解码 -----------------------------------------------*/
 
 int8_t   OV5640_JPEG_HW_Init(void);                                 // 初始化 JPEG 硬件解码器
-int8_t   DCMI_OV5640_JPEG_Init(void);                               // JPEG 模式初始化（DMA NORMAL + DCMI）
+int8_t   DCMI_OV5640_JPEG_Init(void);                               // JPEG 模式初始化（DMA CIRCULAR + DCMI）
+void     OV5640_JPEG_Start_Continuous(void);                        // 启动 JPEG 连续捕获
 void     OV5640_JPEG_StartSnapshot(void);                           // 启动一帧 JPEG 快照
 uint32_t OV5640_JPEG_GetSnapshotSize(void);                         // 快照实际字节数
 int8_t   OV5640_JPEG_Decode(uint8_t *jpeg_data, uint32_t jpeg_size,

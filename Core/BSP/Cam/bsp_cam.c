@@ -1123,6 +1123,23 @@ void OV5640_JPEG_Start_Continuous(void)
                        CAM_DMA_BufferSize);
 }
 
+void OV5640_JPEG_StartSnapshot(void)
+{
+    DMA_Handle_dcmi.Init.Mode = DMA_NORMAL;
+    HAL_DMA_Init(&DMA_Handle_dcmi);
+    HAL_DCMI_Stop(&hdcmi);
+    __HAL_DCMI_CLEAR_FLAG(&hdcmi, DCMI_FLAG_FRAMERI);
+    HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_SNAPSHOT,
+                       (uint32_t)CAM_Buffer_ADDR,
+                       CAM_DMA_BufferSize);
+}
+
+uint32_t OV5640_JPEG_GetSnapshotSize(void)
+{
+    uint32_t remaining = __HAL_DMA_GET_COUNTER(&DMA_Handle_dcmi);
+    return (CAM_DMA_BufferSize - remaining) * 4;
+}
+
 int8_t OV5640_JPEG_Decode(uint8_t *jpeg_data, uint32_t jpeg_size,
                           uint16_t *rgb_out, uint32_t rgb_out_size)
 {
