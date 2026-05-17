@@ -14,9 +14,9 @@
 #include <stddef.h>
 
 /* ====================== SPI 传输常量 ====================== */
-#define SPI_WIRE_SIZE           (1024U)
+#define SPI_WIRE_SIZE           (32768U)        /* 32KB，单帧 JPEG 直接发送 */
 #define UP_HDR_SIZE             (4U)            /* data_valid + data_type + payload_len(BE) */
-#define UP_PAYLOAD_MAX          (SPI_WIRE_SIZE - UP_HDR_SIZE)      /* 1020 */
+#define UP_PAYLOAD_MAX          (SPI_WIRE_SIZE - UP_HDR_SIZE)      /* 32768U */
 #define CMD_HDR_SIZE            (2U)            /* cmd_flag + cmd_len */
 #define CMD_DATA_MAX            (255U)
 

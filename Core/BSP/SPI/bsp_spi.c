@@ -17,8 +17,9 @@ volatile SpiWorkState g_spi_state = SPI_IDLE;
 volatile bool         g_spi_busy  = false;
 
 /* ====================== 内部资源 ====================== */
-static SPI_HandleTypeDef*  s_hspi   = NULL;
-static BspSpi_RxCallback   s_rx_cb  = NULL;
+static SPI_HandleTypeDef*  s_hspi     = NULL;
+static BspSpi_RxCallback   s_rx_cb    = NULL;
+static uint16_t            s_xfer_len = 0;
 
 /* DMA 缓冲区必须在 AXI SRAM (.dma_bss)，STM32H7 DMA1 无法访问 DTCMRAM */
 __attribute__((section(".dma_bss"), aligned(32)))
@@ -46,19 +47,21 @@ void BspSpi_RegisterRxCb(BspSpi_RxCallback cb) { s_rx_cb = cb; }
 HAL_StatusTypeDef BspSpi_StartFullDuplex(uint8_t* tx_ptr, uint16_t len)
 {
     if (!s_hspi || g_spi_busy)   return HAL_ERROR;
-    if (len != SPI_WIRE_SIZE)    return HAL_ERROR;
+    if (len > SPI_WIRE_SIZE)     return HAL_ERROR;
+    if (len == 0)                return HAL_ERROR;
 
-    memcpy(s_tx_buf, tx_ptr, SPI_WIRE_SIZE);
+    s_xfer_len = len;
+    memcpy(s_tx_buf, tx_ptr, len);
 
     g_spi_busy = true;
     SPI_CS_LOW();
-    return HAL_SPI_TransmitReceive_DMA(s_hspi, s_tx_buf, s_rx_buf, SPI_WIRE_SIZE);
+    return HAL_SPI_TransmitReceive_DMA(s_hspi, s_tx_buf, s_rx_buf, len);
 }
 
 HAL_StatusTypeDef BspSpi_StartPoll(void)
 {
     g_spi_state = SPI_TX_POLL;
-    return BspSpi_StartFullDuplex(s_dummy_buf, SPI_WIRE_SIZE);
+    return BspSpi_StartFullDuplex(s_dummy_buf, UP_HDR_SIZE);
 }
 
 /* ====================== DMA 完成回调 (weak override) ====================== */
@@ -67,7 +70,7 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef* hspi)
     if (hspi != s_hspi) return;
     SPI_CS_HIGH();
 
-    if (s_rx_cb) s_rx_cb(s_rx_buf, SPI_WIRE_SIZE, g_spi_state);
+    if (s_rx_cb) s_rx_cb(s_rx_buf, s_xfer_len, g_spi_state);
 
     g_spi_busy  = false;
     g_spi_state = SPI_IDLE;

@@ -28,11 +28,11 @@ UpFrame* DataScheduler_GetHighestPrioFrame(DataModule_t** out_owner)
 
 /* ====================== 注册表 ====================== */
 extern DataModule_t g_data_module_test;
+extern DataModule_t g_data_module_cam;
 
-/* ===== 注册表 — cam 模块暂时独立运行（不通过 SPI 调度器发送） ===== */
 DataModule_t* const g_data_module_list[] = {
+    &g_data_module_cam,
     &g_data_module_test,
-    /* 后续添加 cam 分片发送模块：&g_data_module_cam, */
     /* 在此继续添加：&g_data_module_img, &g_data_module_temp, ... */
 };
 

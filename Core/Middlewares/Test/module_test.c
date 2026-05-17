@@ -10,7 +10,8 @@
 #include "cmsis_os2.h"
 #include <string.h>
 
-static UpFrame DMA_ALIGNED4 s_frame;
+__attribute__((section(".dma_bss"), aligned(4)))
+static UpFrame s_frame;
 static volatile bool s_ready = false;
 static osSemaphoreId_t s_sem;
 

@@ -23,13 +23,13 @@ void OsTasks_Create(void)
     };
     osThreadNew(SPI_Main_Task, NULL, &spiMain_attr);
 
-    /* ---- 摄像头 JPEG + 串口打印任务（测试模式，LCD 关闭） ---- */
+    /* ---- 摄像头 JPEG 采集任务（1fps，SPI 上行） ---- */
     const osThreadAttr_t cam_attr = {
         .name       = "camJpeg",
         .stack_size = 4096,
         .priority   = PRIO_SENSOR_HIGH,
     };
-    osThreadNew(Camera_JPEG_Task, NULL, &cam_attr);
+    osThreadNew(Cam_Collect_Task, NULL, &cam_attr);
 
     /* ===== Test module collection task (10Hz) ===== */
     const osThreadAttr_t test_attr = {

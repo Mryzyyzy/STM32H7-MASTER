@@ -46,6 +46,7 @@ void SPI_Main_Task(void* argument)
     (void)argument;
     AppInit();
     int cnt = 0;
+    __attribute__((section(".dma_bss"), aligned(4)))
     static uint8_t wire_tx[SPI_WIRE_SIZE];
 
     while (1) {
@@ -58,10 +59,10 @@ void SPI_Main_Task(void* argument)
 
                 if (f) {
                     g_spi_state = SPI_TX_NORMAL;
-                    SpiProto_PackUpFrame(f, wire_tx);
+                    uint16_t xfer_len = SpiProto_PackUpFrame(f, wire_tx);
                     SpiProto_SetActiveOwner(owner);
 
-                    if (BspSpi_StartFullDuplex(wire_tx, SPI_WIRE_SIZE) != HAL_OK) {
+                    if (BspSpi_StartFullDuplex(wire_tx, xfer_len) != HAL_OK) {
                         SpiProto_SetActiveOwner(NULL);
                         if (owner && owner->flush) owner->flush();
                     }

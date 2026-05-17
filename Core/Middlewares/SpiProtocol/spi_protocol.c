@@ -11,10 +11,8 @@ static DataModule_t* s_active_owner = NULL;
 void SpiProto_SetActiveOwner(DataModule_t* owner) { s_active_owner = owner; }
 
 /* ====================== MOSI 打包 ====================== */
-void SpiProto_PackUpFrame(const UpFrame* f, uint8_t wire[SPI_WIRE_SIZE])
+uint16_t SpiProto_PackUpFrame(const UpFrame* f, uint8_t wire[SPI_WIRE_SIZE])
 {
-    memset(wire, 0, SPI_WIRE_SIZE);
-
     wire[0] = DATA_VALID_REAL;
     wire[1] = f->data_type;
     wire[2] = (uint8_t)((f->data_len >> 8) & 0xFF);
@@ -23,6 +21,8 @@ void SpiProto_PackUpFrame(const UpFrame* f, uint8_t wire[SPI_WIRE_SIZE])
     uint16_t copy_len = f->data_len;
     if (copy_len > UP_PAYLOAD_MAX) copy_len = UP_PAYLOAD_MAX;
     memcpy(&wire[UP_HDR_SIZE], f->data_buf, copy_len);
+
+    return UP_HDR_SIZE + copy_len;
 }
 
 /* ====================== MISO 解析 ====================== */

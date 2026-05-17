@@ -12,8 +12,8 @@
 /* 注册为 BSP SPI 驱动的 RX 回调，连接协议解析与业务模块 */
 void SpiProto_RegisterAsRxCallback(void);
 
-/* 将 UpFrame 打包为 1024B MOSI wire buffer */
-void SpiProto_PackUpFrame(const UpFrame* f, uint8_t wire[SPI_WIRE_SIZE]);
+/* 将 UpFrame 打包为 MOSI wire buffer，返回实际传输字节数 */
+uint16_t SpiProto_PackUpFrame(const UpFrame* f, uint8_t wire[SPI_WIRE_SIZE]);
 
 /* 设置当前发送中的模块（DMA 完成后自动 flush） */
 void SpiProto_SetActiveOwner(DataModule_t* owner);
