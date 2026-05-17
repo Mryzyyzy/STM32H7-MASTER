@@ -12,6 +12,7 @@
 #include "bsp_cam.h"
 #include "bsp_cam_cfg.h"
 #include "stm32h7xx_hal_jpeg.h"
+#include <stdio.h>
 
 uint16_t    Device_ID;
 DCMI_HandleTypeDef   hdcmi;            // DCMI句柄
@@ -551,33 +552,56 @@ void OV5640_DMA_Init(void)
 *****************************************************************************************************************************************/
 int8_t DCMI_OV5640_Init(void)
 {
+    printf("===== OV5640 Camera Init =====\r\n");
+    printf("Sensor: %dx%d, Display: %dx%d, DMA_BufSize: %d\r\n",
+           OV5640_Width, OV5640_Height,
+           CAM_DISPLAY_Width, CAM_DISPLAY_Height,
+           CAM_DMA_BufferSize);
+
     OV5640_DMA_Init();                       // 初始化DMA配置
+    printf("[DMA] DMA2_Stream7 init done\r\n");
+
     MX_DCMI_Init();                          // 初始化DCMI配置引脚
+    printf("[DCMI] DCMI init done\r\n");
 
     OV5640_PWDN_OFF;  // PWDN 引脚输出低电平，不开启掉电模式
     HAL_Delay(140);
     DCMI_RST_H;
+    printf("[PWR] Power-on sequence done\r\n");
 
     // 复位完成之后，要>=20ms才可执行SCCB配置
     HAL_Delay(40);
     SCCB_GPIO_Config();                      // SCCB引脚初始化
+    printf("[SCCB] GPIO config done\r\n");
+
     HAL_Delay(20);
     SCCB_WriteReg_16Bit(0x3103, 0x11);       // 根据手册的建议，复位之前，直接将时钟输入引脚的时钟作为主时钟
     SCCB_WriteReg_16Bit(0x3008, 0x82);       // 执行一次软复位
+    printf("[SCCB] Soft reset done\r\n");
+
     HAL_Delay(15);                           // 延时>5ms
     Device_ID = OV5640_ReadID();             // 读取器件ID
+    printf("[ID] Chip ID: 0x%04X\r\n", Device_ID);
 
     if (Device_ID == 0x5640) {               // 进行匹配
-        // printf("OV5640 OK,ID:0x%X\r\n", Device_ID);
+        printf("[ID] OV5640 OK!\r\n");
 
         OV5640_Config();                                                  // 配置各项参数
+        printf("[CFG] Register config done (%d regs)\r\n",
+               (int)(sizeof(OV5640_INIT_Config) / 4));
+
         OV5640_Set_Framesize(OV5640_Width, OV5640_Height);                // 设置OV5640输出的图像大小
+        printf("[FMT] Framesize set: %dx%d\r\n", OV5640_Width, OV5640_Height);
+
         OV5640_DCMI_Crop(CAM_DISPLAY_Width, CAM_DISPLAY_Height,
                          OV5640_Width, OV5640_Height);                    // 将输出图像裁剪成适应屏幕的大小
+        printf("[CROP] Crop to: %dx%d\r\n", CAM_DISPLAY_Width, CAM_DISPLAY_Height);
+        printf("===== Camera Init SUCCESS =====\r\n");
 
         return OV5640_Success;   // 返回成功标志
     } else {
-        // printf("OV5640 ERROR!!!!!  ID:%X\r\n", Device_ID);
+        printf("[ID] OV5640 ERROR! Unexpected ID: 0x%04X\r\n", Device_ID);
+        printf("===== Camera Init FAILED =====\r\n");
         return OV5640_Error;     // 返回错误标志
     }
 }
@@ -731,10 +755,10 @@ void OV5640_Config(void)
         read_reg = SCCB_ReadReg_16Bit(OV5640_INIT_Config[i][0]); // 读取配置，用于调试
 
         if (OV5640_INIT_Config[i][1] != read_reg) {              // 配置不成功
-            // printf("配置位置：%lu\r\n", (unsigned long)i);
-            // printf("0x%x-0x%x-0x%x\r\n",
-            //        OV5640_INIT_Config[i][0],
-            //        OV5640_INIT_Config[i][1], read_reg);
+            printf("[CFG] ERR @ %lu: w 0x%04X->0x%02X, r 0x%02X\r\n",
+                   (unsigned long)i,
+                   OV5640_INIT_Config[i][0],
+                   OV5640_INIT_Config[i][1], read_reg);
         }
     }
 }
